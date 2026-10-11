@@ -112,6 +112,9 @@ export function createNamer(rng) {
       return unique(() => `${pickFrom(rng, ROOTS)}-anomália`);
     },
 
+    island() {
+      return unique(() => `${pickFrom(rng, ROOTS)}-sziget`);
+    },
     reset() {
       used.clear();
     },

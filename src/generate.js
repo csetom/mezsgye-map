@@ -8,8 +8,7 @@
  */
 
 import {
-  addEdge,
-  addNode,
+  addEdge, addNode,
   createEmptyGraph,
   defaultSchema,
   makeRng,
@@ -30,6 +29,7 @@ export const GENERATOR_DEFAULTS = {
   minorCurrentChance: 0.35,
   /** Chance per sector of hosting a waystation / an anomaly. */
   waystationChance: 0.25,
+  islandChance: 0.25,
   anomalyChance: 0.18,
   /** Chance a street is marked as collapsed. */
   collapsedChance: 0.07,
@@ -39,7 +39,7 @@ export const GENERATOR_DEFAULTS = {
 };
 
 const DENSITIES = ['dead', 'thin', 'stable', 'stable', 'rich', 'volatile'];
-const ACCESS = ['open', 'open', 'tolled', 'warded', 'forbidden', 'unknown'];
+const ACCESS = ['open', 'open', 'tolled', 'warded', 'forbidden', 'unknown']; // doubleing the open chanche
 const WORLD_TYPES = ['terrestrial', 'oceanic', 'shard', 'city-world', 'wild', 'dead'];
 const REACHABLE = ['void-side', 'outside-only', 'both', 'both'];
 const MAGIC = ['null', 'faint', 'common', 'common', 'saturated'];
@@ -48,7 +48,7 @@ const SECTOR_HAZARDS = [
   'essence undertow', 'wave shear', 'silence', 'drifting wrecks', 'toll patrols',
   'memory bleed', 'compass rot', 'star-blind fog',
 ];
-const SERVICES = ['essence tap', 'repairs', 'berths', 'fence', 'charts', 'healer', 'bar'];
+const SERVICES = ['repairs', 'berths', 'fence', 'charts', 'healer', 'bar'];
 const PHENOMENA = [
   'a knot in the current', 'a wave that runs backwards', 'a wreck that is still arriving',
   'a chorus with no singers', 'a sector that is not on any chart',
@@ -138,7 +138,7 @@ export function generateAtlas(options = {}) {
       category,
       data: {
         cost: category === 'minor_current' ? randInt(rng, 2, 4) : randInt(rng, 1, 3),
-        travel_time: `${randInt(rng, 1, 9)} ${pick(rng, ['hours', 'days', 'watches'])}`,
+        travel_time: `${randInt(rng, 1, 23)} ${pick(rng, ['hours', 'days'])}`,
         current_strength: pick(rng, CURRENTS),
         void_maker_required: category !== 'minor_current' || rng() < 0.5,
         hazards: rng() < 0.35 ? [pick(rng, SECTOR_HAZARDS)] : [],
@@ -185,11 +185,12 @@ export function generateAtlas(options = {}) {
   for (const sector of sectors) {
     if (rng() < opt.waystationChance) {
       const angle = rng() * Math.PI * 2;
-      const station = addNode(graph, {
+      addNode(graph, {
         name: namer.station(),
         category: 'waystation',
         x: sector.x + Math.cos(angle) * 150,
         y: sector.y + Math.sin(angle) * 150,
+        parent: sector.id,
         data: {
           operator: pick(rng, ['independent', 'guild-held', 'void maker cartel', 'nobody admits to it']),
           services: [pick(rng, SERVICES), pick(rng, SERVICES)],
@@ -197,7 +198,29 @@ export function generateAtlas(options = {}) {
           description: '',
         },
       });
-      street(sector, station, 'minor_current');
+      //street(sector, station, 'minor_current');
+    }
+    const extra = rng()*4;
+    for (let i=1; i<extra ; i++ ) {
+      if (rng() < opt.islandChance) {
+        const angle = rng() * Math.PI * 2;
+        addNode(graph, {
+          name: namer.island(),
+          category: 'island',
+          x: sector.x + Math.cos(angle) * 150,
+          y: sector.y + Math.sin(angle) * 150,
+          parent: sector.id,
+          data: {
+            safety: pick(rng, ['sanctuary', 'neutral', 'neutral', 'rough', 'trap']),
+            danger: pick(rng, ['low', 'moderate', 'moderate', 'severe', 'lethal']),
+            magic_level: pick(rng, MAGIC),
+            population: pick(rng, ['uninhabited', 'scattered', 'a few holdfasts', 'populous', 'teeming']),
+            factions: [],
+            services: [pick(rng, SERVICES), pick(rng, SERVICES)],
+            description:"",
+          },
+        });
+      }
     }
     if (rng() < opt.anomalyChance) {
       const angle = rng() * Math.PI * 2;
@@ -212,6 +235,7 @@ export function generateAtlas(options = {}) {
           effect: '',
         },
       });
+      
       if (rng() < 0.6) street(sector, anomaly, 'collapsed_route');
     }
   }
