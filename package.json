@@ -1,0 +1,20 @@
+{
+  "name": "mezsgye-atlas",
+  "version": "1.0.0",
+  "description": "Sector and essence-highway atlas editor for the Mezsgye RPG setting",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "check": "for f in server.js src/*.js public/js/*.js test/*.js; do node --check \"$f\" || exit 1; done && echo 'syntax ok'"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT",
+  "private": true,
+  "dependencies": {},
+  "devDependencies": {}
+}

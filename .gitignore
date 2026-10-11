@@ -1,0 +1,13 @@
+node_modules/
+npm-debug.log*
+
+# Saved atlases are user data, not source.
+data/
+*.atlas.json
+!examples/*.atlas.json
+
+# Editor noise
+.DS_Store
+*.swp
+.idea/
+.vscode/

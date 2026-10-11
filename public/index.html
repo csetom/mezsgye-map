@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mezsgye Atlas</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpolygon points='16,3 28,10 28,22 16,29 4,22 4,10' fill='%238b6cff'/%3E%3C/svg%3E">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <polygon points="16,3 28,10 28,22 16,29 4,22 4,10"></polygon>
+    </svg>
+    <div class="brand-text">
+      <h1>Mezsgye Atlas</h1>
+      <p id="atlas-title-line">Untitled Atlas</p>
+    </div>
+  </div>
+
+  <div class="toolgroup" role="group" aria-label="Atlas file">
+    <label class="visually-hidden" for="file-select">Stored atlas</label>
+    <select id="file-select" title="Stored atlases">
+      <option value="">— unsaved —</option>
+    </select>
+    <button id="btn-save" title="Save to the selected file (Ctrl+S)">Save</button>
+    <button id="btn-save-as" title="Save under a new name">Save as…</button>
+    <button id="btn-new" title="Start an empty atlas">New</button>
+    <button id="btn-delete-file" class="danger" title="Delete the selected stored atlas">Delete file</button>
+  </div>
+
+  <div class="toolgroup" role="group" aria-label="Transfer">
+    <button id="btn-import" title="Import an atlas JSON file">Import…</button>
+    <button id="btn-export" title="Download this atlas as JSON">Export</button>
+    <input type="file" id="import-input" accept=".json,application/json" hidden>
+  </div>
+
+  <div class="toolgroup" role="group" aria-label="Authoring">
+    <button id="btn-generate" title="Generate a sector map">Generate…</button>
+    <button id="btn-categories" title="Add or edit categories and their fields">Categories…</button>
+    <button id="btn-meta" title="Atlas title and notes">Atlas info…</button>
+  </div>
+
+  <div class="toolgroup grow" role="group" aria-label="Search">
+    <input type="search" id="search" placeholder="Filter by name, category or field value…" autocomplete="off">
+    <span id="search-count" class="hint"></span>
+  </div>
+</header>
+
+<main class="workspace">
+
+  <nav class="toolbar" aria-label="Tools">
+    <button class="tool" data-tool="select" aria-pressed="true" title="Select / drag  (V)">
+      <span class="glyph">➚</span><span class="tool-label">Select</span>
+    </button>
+    <button class="tool" data-tool="add" title="Place a new node  (A)">
+      <span class="glyph">＋</span><span class="tool-label">Place</span>
+    </button>
+    <button class="tool" data-tool="connect" title="Draw a highway between two nodes  (C)">
+      <span class="glyph">↔</span><span class="tool-label">Link</span>
+    </button>
+    <button class="tool" data-tool="route" title="Plot the cheapest route between two nodes  (R)">
+      <span class="glyph">⇢</span><span class="tool-label">Route</span>
+    </button>
+    <button class="tool" data-tool="erase" title="Delete what you click  (X)">
+      <span class="glyph">⌫</span><span class="tool-label">Erase</span>
+    </button>
+
+    <div class="toolbar-sep"></div>
+
+    <label class="visually-hidden" for="place-category">Category to place</label>
+    <select id="place-category" title="Category used by the Place tool"></select>
+    <label class="visually-hidden" for="link-category">Category for new links</label>
+    <select id="link-category" title="Category used by the Link tool"></select>
+
+    <div class="toolbar-sep"></div>
+
+    <button id="btn-relax" title="Relax the layout (L)"><span class="glyph">✦</span><span class="tool-label">Relax</span></button>
+    <button id="btn-fit" title="Fit the map to the view (F)"><span class="glyph">⊡</span><span class="tool-label">Fit</span></button>
+    <button id="btn-labels" aria-pressed="true" title="Toggle labels"><span class="glyph">A</span><span class="tool-label">Labels</span></button>
+  </nav>
+
+  <section class="canvas-wrap">
+    <svg id="canvas" tabindex="0" aria-label="Sector map">
+      <defs>
+        <radialGradient id="void-glow" cx="50%" cy="50%" r="70%">
+          <stop offset="0%" stop-color="#1b1733"></stop>
+          <stop offset="100%" stop-color="#0a0912"></stop>
+        </radialGradient>
+      </defs>
+      <rect id="backdrop" x="-50000" y="-50000" width="100000" height="100000" fill="url(#void-glow)"></rect>
+      <g id="viewport">
+        <g id="layer-tethers"></g>
+        <g id="layer-edges"></g>
+        <g id="layer-edge-labels"></g>
+        <g id="layer-nodes"></g>
+        <g id="layer-node-labels"></g>
+        <g id="layer-overlay"></g>
+      </g>
+    </svg>
+
+    <div id="legend" class="legend" aria-label="Legend"></div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <div id="hint-bar" class="hint-bar"></div>
+  </section>
+
+  <aside class="inspector" aria-label="Inspector">
+    <div id="inspector-body">
+      <p class="empty-state">Click a sector, a world or a highway to inspect it.</p>
+    </div>
+  </aside>
+
+</main>
+
+<footer class="statusbar">
+  <span id="status-stats">—</span>
+  <span id="status-dirty" class="dirty-flag"></span>
+  <span class="grow"></span>
+  <span id="status-selection">nothing selected</span>
+</footer>
+
+<!-- ---------------------------------------------------------------- -->
+<dialog id="dlg-generate">
+  <form method="dialog" id="form-generate">
+    <h2>Generate a sector map</h2>
+    <p class="dialog-note">Deterministic: the same seed always produces the same atlas.</p>
+    <div class="grid2">
+      <label>Title <input name="title" type="text" value="Generated Atlas"></label>
+      <label>Seed <input name="seed" type="number" value="1" min="0" step="1"></label>
+      <label>Sectors <input name="sectors" type="number" value="8" min="1" max="200"></label>
+      <label>Ring radius <input name="radius" type="number" value="420" min="80" max="4000" step="20"></label>
+      <label>Worlds per sector — min <input name="worldsMin" type="number" value="1" min="0" max="12"></label>
+      <label>Worlds per sector — max <input name="worldsMax" type="number" value="4" min="0" max="12"></label>
+      <label>Extra streets (× sectors) <input name="extraStreets" type="number" value="0.6" min="0" max="3" step="0.1"></label>
+      <label>Minor-current chance <input name="minorCurrentChance" type="number" value="0.35" min="0" max="1" step="0.05"></label>
+      <label>Waystation chance <input name="waystationChance" type="number" value="0.25" min="0" max="1" step="0.05"></label>
+      <label>Anomaly chance <input name="anomalyChance" type="number" value="0.18" min="0" max="1" step="0.05"></label>
+    </div>
+    <p class="warn">This replaces the atlas currently open.</p>
+    <menu>
+      <button value="cancel">Cancel</button>
+      <button value="ok" class="primary">Generate</button>
+    </menu>
+  </form>
+</dialog>
+
+<dialog id="dlg-categories">
+  <div class="dialog-head">
+    <h2>Categories</h2>
+    <button id="cat-close" class="icon-btn" title="Close">✕</button>
+  </div>
+  <div class="tabs" role="tablist">
+    <button class="tab" data-kind="node" aria-pressed="true">Node categories</button>
+    <button class="tab" data-kind="edge">Link categories</button>
+  </div>
+  <div id="cat-body" class="dialog-body"></div>
+</dialog>
+
+<dialog id="dlg-meta">
+  <form method="dialog" id="form-meta">
+    <h2>Atlas info</h2>
+    <label>Title <input name="title" type="text"></label>
+    <label>Subtitle <input name="subtitle" type="text"></label>
+    <label>Notes <textarea name="notes" rows="6"></textarea></label>
+    <menu>
+      <button value="cancel">Cancel</button>
+      <button value="ok" class="primary">Apply</button>
+    </menu>
+  </form>
+</dialog>
+
+<dialog id="dlg-prompt">
+  <form method="dialog" id="form-prompt">
+    <h2 id="prompt-title">Name</h2>
+    <label id="prompt-label">Value <input name="value" type="text" autocomplete="off"></label>
+    <p id="prompt-note" class="dialog-note"></p>
+    <menu>
+      <button value="cancel">Cancel</button>
+      <button value="ok" class="primary">OK</button>
+    </menu>
+  </form>
+</dialog>
+
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>
