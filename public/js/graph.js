@@ -104,6 +104,7 @@ export class AtlasView {
     this.pan = null;
     this.rubber = null;
     this.relaxHandle = null;
+    this.flexible = false; // when true, force simulation runs continuously
 
     this.#bindEvents();
   }
@@ -188,6 +189,28 @@ export class AtlasView {
     if (this.collapsed.has(nodeId)) this.collapsed.delete(nodeId);
     else this.collapsed.add(nodeId);
     this.rebuild();
+  }
+
+  /**
+   * Collapse every node that has children.
+   *
+   * @returns {number} how many parent nodes were collapsed
+   */
+  collapseAll() {
+    if (!this.graph) return 0;
+    for (const node of this.graph.nodes) {
+      if (childrenOf(this.graph, node.id).length) this.collapsed.add(node.id);
+    }
+    this.rebuild();
+    return this.collapsed.size;
+  }
+
+  /** Expand every collapsed node. */
+  expandAll() {
+    const count = this.collapsed.size;
+    this.collapsed.clear();
+    this.rebuild();
+    return count;
   }
 
   /** Is this node hidden because an ancestor is collapsed? */
@@ -286,16 +309,50 @@ export class AtlasView {
   relax(ticks = 220) {
     if (!this.graph) return;
     this.stopRelax();
+    this.#runRelax(ticks, false);
+  }
+
+  /**
+   * Turn continuous flexible mode on or off.
+   *
+   * In flexible mode the force simulation never stops: nodes drift under the
+   * same forces as Relax, and you can grab and drag any node while the rest of
+   * the layout keeps settling around it. Turning it off freezes everything
+   * where it is.
+   *
+   * @param {boolean} on
+   */
+  setFlexible(on) {
+    this.flexible = Boolean(on);
+    this.stopRelax();
+    if (this.flexible) {
+      // Infinity ticks → the simulation loops forever at a steady, gentle alpha.
+      this.#runRelax(Infinity, true);
+    }
+  }
+
+  /**
+   * The actual force loop, shared by one-shot Relax and continuous Flexible.
+   *
+   * @param {number} ticks  number of frames, or Infinity for continuous
+   * @param {boolean} continuous  keep a steady alpha and never finalise
+   */
+  #runRelax(ticks, continuous) {
     let remaining = ticks;
-    const nodes = [...this.nodeEls.keys()].map((id) => getNode(this.graph, id));
+    const refreshNodes = () => [...this.nodeEls.keys()].map((id) => getNode(this.graph, id));
+    let nodes = refreshNodes();
     for (const node of nodes) {
       node._vx = 0;
       node._vy = 0;
     }
-    const byId = new Map(nodes.map((n) => [n.id, n]));
 
     const step = () => {
-      const alpha = Math.max(0.02, remaining / ticks);
+      // In continuous mode the node set can change (add/remove/collapse), so
+      // re-read it each frame; the extra Map build is negligible at these sizes.
+      if (continuous) nodes = refreshNodes();
+      const byId = new Map(nodes.map((n) => [n.id, n]));
+      // Continuous mode holds a steady, gentle alpha; one-shot cools down.
+      const alpha = continuous ? 0.35 : Math.max(0.02, remaining / ticks);
       for (const node of nodes) {
         node._fx = 0;
         node._fy = 0;
@@ -356,7 +413,7 @@ export class AtlasView {
         node._fy -= node.y * 0.002;
       }
       for (const node of nodes) {
-        if (node.pinned || this.drag?.id === node.id) continue;
+        if (node.pinned || this.drag?.ids?.has(node.id)) continue;
         node._vx = (node._vx + node._fx) * 0.78;
         node._vy = (node._vy + node._fy) * 0.78;
         node.x += node._vx * alpha;
@@ -611,6 +668,32 @@ export class AtlasView {
     return null;
   }
 
+  /**
+   * Collect the descendants that should move together with a dragged node.
+   *
+   * Walks the containment tree below `rootId` and returns every child that is
+   * not pinned. A pinned node stays put, and the walk stops descending into it
+   * so its own children keep orbiting it rather than the node being dragged.
+   *
+   * @param {string} rootId
+   * @returns {Array<object>} node objects to drag along
+   */
+  #draggableDescendants(rootId) {
+    const result = [];
+    const seen = new Set([rootId]);
+    const walk = (parentId) => {
+      for (const child of childrenOf(this.graph, parentId)) {
+        if (seen.has(child.id)) continue; // guard against cyclic parents
+        seen.add(child.id);
+        if (child.pinned) continue; // pinned children (and their subtree) stay
+        result.push(child);
+        walk(child.id);
+      }
+    };
+    walk(rootId);
+    return result;
+  }
+
   #onPointerDown(evt) {
     if (evt.button === 2) return;
     this.svg.focus({ preventScroll: true });
@@ -666,12 +749,23 @@ export class AtlasView {
       if (hit.type === 'node' && this.tool === 'select') {
         const node = getNode(this.graph, hit.id);
         const start = this.worldFromEvent(evt);
+        // Children (recursively) follow the parent, unless they are pinned.
+        const followers = this.#draggableDescendants(hit.id);
         this.drag = {
           id: hit.id,
           dx: node.x - start.x,
           dy: node.y - start.y,
           moved: false,
           pointerId: evt.pointerId,
+          // Every node the physics loop must leave alone while this drag runs.
+          ids: new Set([hit.id, ...followers.map((f) => f.id)]),
+          // Each follower's offset relative to the dragged node, so the whole
+          // group keeps its shape as it moves.
+          followers: followers.map((child) => ({
+            id: child.id,
+            ox: child.x - node.x,
+            oy: child.y - node.y,
+          })),
         };
         this.svg.setPointerCapture(evt.pointerId);
       }
@@ -692,6 +786,13 @@ export class AtlasView {
       if (!node) return;
       node.x = p.x + this.drag.dx;
       node.y = p.y + this.drag.dy;
+      // Drag the group: each unpinned descendant keeps its relative offset.
+      for (const f of this.drag.followers ?? []) {
+        const child = getNode(this.graph, f.id);
+        if (!child) continue;
+        child.x = node.x + f.ox;
+        child.y = node.y + f.oy;
+      }
       this.drag.moved = true;
       this.#updatePositions();
       return;
@@ -716,7 +817,10 @@ export class AtlasView {
       try { this.svg.releasePointerCapture(evt.pointerId); } catch { /* already released */ }
       if (moved) {
         const node = getNode(this.graph, id);
-        node.pinned = true;
+        // In flexible mode leave the node unpinned so it keeps floating with
+        // the live simulation. Otherwise pin only the node you grabbed;
+        // followers stay unpinned so they keep following future moves.
+        if (!this.flexible) node.pinned = true;
         this.rebuild();
         this.h.onNodeMoved?.(id, node.x, node.y);
       }

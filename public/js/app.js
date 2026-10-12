@@ -525,12 +525,36 @@ function wireToolbar() {
     view.relax();
     hint('Relaxing layout — pinned nodes stay put');
   });
+  const flexBtn = $('#btn-flexible');
+  flexBtn.addEventListener('click', () => {
+    const on = flexBtn.getAttribute('aria-pressed') !== 'true';
+    flexBtn.setAttribute('aria-pressed', String(on));
+    view.setFlexible(on);
+    hint(on
+      ? 'Flexible mode ON — drag any node freely; pin nodes to hold them still'
+      : 'Flexible mode OFF — layout frozen');
+  });
   $('#btn-fit').addEventListener('click', () => view.fit());
   const labelBtn = $('#btn-labels');
   labelBtn.addEventListener('click', () => {
     const on = labelBtn.getAttribute('aria-pressed') !== 'true';
     labelBtn.setAttribute('aria-pressed', String(on));
     view.setLabels(on);
+  });
+
+  const collapseBtn = $('#btn-collapse-all');
+  collapseBtn.addEventListener('click', () => {
+    // Toggle: if anything is collapsed, expand everything; otherwise collapse
+    // every parent node.
+    if (view.collapsed.size > 0) {
+      const count = view.expandAll();
+      collapseBtn.setAttribute('aria-pressed', 'false');
+      hint(count ? `Expanded ${count} node(s)` : 'Nothing to expand');
+    } else {
+      const count = view.collapseAll();
+      collapseBtn.setAttribute('aria-pressed', String(count > 0));
+      hint(count ? `Collapsed ${count} parent node(s)` : 'No parent nodes to collapse');
+    }
   });
 }
 
@@ -636,6 +660,16 @@ function wireKeyboard() {
       case 'x': setTool('erase'); break;
       case 'f': view.fit(); break;
       case 'l': view.relax(); break;
+      case 'g': {
+        const flexBtn = $('#btn-flexible');
+        const on = flexBtn.getAttribute('aria-pressed') !== 'true';
+        flexBtn.setAttribute('aria-pressed', String(on));
+        view.setFlexible(on);
+        hint(on
+          ? 'Flexible mode ON — drag any node freely; pin nodes to hold them still'
+          : 'Flexible mode OFF — layout frozen');
+        break;
+      }
       case 'delete':
       case 'backspace':
         if (state.selection) {
