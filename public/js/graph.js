@@ -9,10 +9,13 @@
 import {
   childrenOf,
   edgeCost,
+  formatDuration,
   getEdgeCategory,
   getNode,
   getNodeCategory,
+  nodeColor,
 } from '/shared/model.js';
+import { forceStep } from '/shared/layout.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 
@@ -105,6 +108,7 @@ export class AtlasView {
     this.rubber = null;
     this.relaxHandle = null;
     this.flexible = false; // when true, force simulation runs continuously
+    this.readOnly = false; // view-only: no creating; moving nodes is still allowed
 
     this.#bindEvents();
   }
@@ -117,6 +121,11 @@ export class AtlasView {
     this.collapsed = new Set([...this.collapsed].filter((id) => getNode(graph, id)));
     this.pendingLink = null;
     this.rebuild();
+  }
+
+  /** View-only mode: disables double-click-to-create. */
+  setReadOnly(on) {
+    this.readOnly = Boolean(on);
   }
 
   /** @param {string} tool one of select|add|connect|route|erase */
@@ -339,95 +348,30 @@ export class AtlasView {
    */
   #runRelax(ticks, continuous) {
     let remaining = ticks;
-    const refreshNodes = () => [...this.nodeEls.keys()].map((id) => getNode(this.graph, id));
-    let nodes = refreshNodes();
-    for (const node of nodes) {
-      node._vx = 0;
-      node._vy = 0;
-    }
+    // Velocities are kept per run in a side table, keyed by node id. Nodes that
+    // appear mid-run (placed while flexible mode is on) just start at rest —
+    // previously they had undefined velocity, which turned every coordinate
+    // into NaN and crashed the renderer.
+    const velocity = new Map();
+    const visibleNodes = () => [...this.nodeEls.keys()].map((id) => getNode(this.graph, id)).filter(Boolean);
 
     const step = () => {
-      // In continuous mode the node set can change (add/remove/collapse), so
-      // re-read it each frame; the extra Map build is negligible at these sizes.
-      if (continuous) nodes = refreshNodes();
-      const byId = new Map(nodes.map((n) => [n.id, n]));
+      if (!this.graph) {
+        this.relaxHandle = null;
+        return;
+      }
       // Continuous mode holds a steady, gentle alpha; one-shot cools down.
       const alpha = continuous ? 0.35 : Math.max(0.02, remaining / ticks);
-      for (const node of nodes) {
-        node._fx = 0;
-        node._fy = 0;
-      }
-      // Repulsion.
-      for (let i = 0; i < nodes.length; i += 1) {
-        for (let j = i + 1; j < nodes.length; j += 1) {
-          const a = nodes[i];
-          const b = nodes[j];
-          let dx = b.x - a.x;
-          let dy = b.y - a.y;
-          let d2 = dx * dx + dy * dy;
-          if (d2 < 0.01) {
-            dx = (Math.random() - 0.5) * 2;
-            dy = (Math.random() - 0.5) * 2;
-            d2 = dx * dx + dy * dy;
-          }
-          const d = Math.sqrt(d2);
-          const force = 26000 / d2;
-          const fx = (dx / d) * force;
-          const fy = (dy / d) * force;
-          a._fx -= fx; a._fy -= fy;
-          b._fx += fx; b._fy += fy;
-        }
-      }
-      // Springs along links.
-      for (const edge of this.graph.edges) {
-        const a = byId.get(edge.from);
-        const b = byId.get(edge.to);
-        if (!a || !b) continue;
-        const rest = 150 + edgeCost(edge) * 35;
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const d = Math.max(1, Math.hypot(dx, dy));
-        const force = (d - rest) * 0.035;
-        const fx = (dx / d) * force;
-        const fy = (dy / d) * force;
-        a._fx += fx; a._fy += fy;
-        b._fx -= fx; b._fy -= fy;
-      }
-      // Containment: children orbit their parent closely.
-      for (const node of nodes) {
-        if (!node.parent) continue;
-        const parent = byId.get(node.parent);
-        if (!parent) continue;
-        const dx = parent.x - node.x;
-        const dy = parent.y - node.y;
-        const d = Math.max(1, Math.hypot(dx, dy));
-        const force = (d - 95) * 0.12;
-        node._fx += (dx / d) * force;
-        node._fy += (dy / d) * force;
-        parent._fx -= (dx / d) * force * 0.2;
-        parent._fy -= (dy / d) * force * 0.2;
-      }
-      // Weak gravity so disconnected pieces do not drift forever.
-      for (const node of nodes) {
-        node._fx -= node.x * 0.002;
-        node._fy -= node.y * 0.002;
-      }
-      for (const node of nodes) {
-        if (node.pinned || this.drag?.ids?.has(node.id)) continue;
-        node._vx = (node._vx + node._fx) * 0.78;
-        node._vy = (node._vy + node._fy) * 0.78;
-        node.x += node._vx * alpha;
-        node.y += node._vy * alpha;
-      }
+      forceStep(visibleNodes(), this.graph.edges, velocity, {
+        alpha,
+        frozen: this.drag?.ids ?? new Set(),
+      });
       this.#updatePositions();
       remaining -= 1;
       if (remaining > 0) {
         this.relaxHandle = requestAnimationFrame(step);
       } else {
         this.relaxHandle = null;
-        for (const node of nodes) {
-          delete node._vx; delete node._vy; delete node._fx; delete node._fy;
-        }
         this.h.onLayoutChanged?.();
       }
     };
@@ -455,7 +399,7 @@ export class AtlasView {
 
   #createNode(node) {
     const cat = getNodeCategory(this.graph, node.category);
-    const color = cat?.color ?? '#8b6cff';
+    const color = nodeColor(this.graph, node);
     const r = cat?.size ?? 18;
 
     const g = svgEl('g', { class: 'node', 'data-node-id': node.id, style: `color:${color}` });
@@ -523,11 +467,15 @@ export class AtlasView {
     }
 
     const title = svgEl('title');
-    title.textContent = `${edge.notes || cat?.label || edge.category} (${cat?.label ?? ''}) — cost ${edgeCost(edge)}`;
+    const hasTime = edge.data?.cost !== undefined && edge.data?.cost !== null && edge.data?.cost !== '';
+    const time = hasTime ? formatDuration(edgeCost(edge)) : '';
+    title.textContent = `${edge.notes || cat?.label || edge.category} (${cat?.label ?? ''})`
+      + (time ? ` — ${time}` : '');
     g.append(title);
 
     const label = svgEl('text', { class: 'edge-label', 'data-edge-label-for': edge.id });
-    label.textContent = edge.notes || cat?.label || '';
+    const short = hasTime ? formatDuration(edgeCost(edge), { compact: true }) : '';
+    label.textContent = [edge.notes || cat?.label || '', short].filter(Boolean).join(' · ');
 
     this.layers.edges.append(g);
     this.layers.edgeLabels.append(label);
@@ -859,7 +807,7 @@ export class AtlasView {
       this.toggleCollapse(hit.id);
       return;
     }
-    if (!hit && this.tool === 'select') {
+    if (!hit && this.tool === 'select' && !this.readOnly) {
       const { x, y } = this.worldFromEvent(evt);
       this.h.onCreateNodeAt?.(x, y);
     }

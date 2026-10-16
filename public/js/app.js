@@ -14,6 +14,7 @@ import {
   defaultSchema,
   deserialize,
   findRoute,
+  formatDuration,
   getEdgeCategory,
   getNode,
   getNodeCategory,
@@ -25,6 +26,7 @@ import {
   updateNode,
 } from '/shared/model.js';
 import { GENERATOR_DEFAULTS, generateAtlas } from '/shared/generate.js';
+import { History } from '/shared/history.js';
 import { api } from './api.js';
 import { AtlasView } from './graph.js';
 import { Inspector } from './inspector.js';
@@ -42,6 +44,24 @@ const state = {
   selection: null,
   tool: 'select',
 };
+
+/**
+ * View-only mode, switched on with `?readonly` in the URL (e.g. a link you
+ * share with players). Client-side only: it hides and blocks editing in this
+ * page, but it is not access control — the server still accepts writes.
+ * Moving nodes is allowed; such moves are never marked as unsaved.
+ */
+const READ_ONLY = (() => {
+  const value = new URLSearchParams(window.location.search).get('readonly');
+  return value !== null && !/^(0|false|no|off)$/i.test(value);
+})();
+
+/** Tools that change the document, unavailable in read-only mode. */
+const EDIT_TOOLS = new Set(['add', 'connect', 'erase']);
+
+/** Undo/redo over serialized snapshots of the open document. */
+const undoHistory = new History({ limit: 100 });
+const snapshot = () => JSON.stringify(state.graph);
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -65,6 +85,9 @@ const dom = {
   dlgCategories: $('#dlg-categories'),
   dlgMeta: $('#dlg-meta'),
   dlgPrompt: $('#dlg-prompt'),
+  btnUndo: $('#btn-undo'),
+  btnRedo: $('#btn-redo'),
+  readonlyBadge: $('#readonly-badge'),
 };
 
 /* ------------------------------------------------------------------ *
@@ -126,6 +149,17 @@ function askText({ title, label, value = '', note = '' }) {
  * View, inspector, categories
  * ------------------------------------------------------------------ */
 
+/**
+ * Undo-coalescing key for an inspector edit, e.g. "node:n3:name" or
+ * "edge:e2:data.cost": repeated edits to one field merge into one undo step.
+ */
+function patchKey(kind, id, patch) {
+  const parts = Object.keys(patch)
+    .map((k) => (k === 'data' ? `data.${Object.keys(patch.data ?? {}).join('.')}` : k))
+    .sort();
+  return `${kind}:${id}:${parts.join(',')}`;
+}
+
 const view = new AtlasView(dom.svg, {
   onSelect: (sel) => select(sel),
   onNodeMoved: () => {
@@ -133,6 +167,7 @@ const view = new AtlasView(dom.svg, {
     refreshChrome();
   },
   onCreateNodeAt: (x, y) => {
+    if (READ_ONLY) return;
     const category = dom.placeCategory.value || state.graph.schema.nodeCategories[0].id;
     const node = addNode(state.graph, { category, x, y });
     markDirty();
@@ -141,6 +176,7 @@ const view = new AtlasView(dom.svg, {
     toast(`${getNodeCategory(state.graph, category).label} placed.`, 'ok');
   },
   onConnect: (fromId, toId) => {
+    if (READ_ONLY) return;
     try {
       const category = dom.linkCategory.value || state.graph.schema.edgeCategories[0].id;
       const edge = addEdge(state.graph, { from: fromId, to: toId, category });
@@ -161,7 +197,7 @@ const view = new AtlasView(dom.svg, {
     }
     view.setRoute(route);
     const names = route.nodes.map((id) => getNode(state.graph, id).name).join(' → ');
-    toast(`${route.edges.length} hop(s), cost ${route.cost}: ${names}`, 'ok');
+    toast(`${route.edges.length} hop(s), ${formatDuration(route.cost)} total: ${names}`, 'ok');
   },
   onErase: (sel) => {
     if (sel.type === 'node') deleteNode(sel.id);
@@ -176,21 +212,25 @@ const view = new AtlasView(dom.svg, {
 
 const inspector = new Inspector(dom.inspector, {
   onPatchNode: (id, patch) => {
+    if (READ_ONLY) return;
     try {
       updateNode(state.graph, id, patch);
-      markDirty();
+      markDirty(patchKey('node', id, patch));
       view.rebuild();
       refreshChrome();
-      if ('category' in patch || 'parent' in patch) inspector.render(state.graph, state.selection);
+      if ('category' in patch || 'parent' in patch || 'color' in patch) {
+        inspector.render(state.graph, state.selection);
+      }
     } catch (err) {
       toast(err.message, 'error');
       inspector.render(state.graph, state.selection);
     }
   },
   onPatchEdge: (id, patch) => {
+    if (READ_ONLY) return;
     try {
       updateEdge(state.graph, id, patch);
-      markDirty();
+      markDirty(patchKey('edge', id, patch));
       view.rebuild();
       refreshChrome();
       if ('category' in patch || 'from' in patch || 'to' in patch) {
@@ -206,6 +246,7 @@ const inspector = new Inspector(dom.inspector, {
   onSelect: (sel) => select(sel),
   onFocusNode: (id) => view.centerOn(id),
   onAddChild: (parentId) => {
+    if (READ_ONLY) return;
     const parent = getNode(state.graph, parentId);
     const worldCat = state.graph.schema.nodeCategories.find((c) => c.id === 'world')
       ?? state.graph.schema.nodeCategories[0];
@@ -260,6 +301,7 @@ function select(sel) {
 }
 
 function deleteNode(id) {
+  if (READ_ONLY) return;
   const node = getNode(state.graph, id);
   if (!node) return;
   const result = removeNode(state.graph, id);
@@ -269,10 +311,11 @@ function deleteNode(id) {
   select(null);
   refreshChrome();
   const extra = result.nodes.length - 1;
-  toast(`Deleted ${node.name}${extra > 0 ? ` and ${extra} contained node(s)` : ''}.`, 'ok');
+  toast(`Deleted ${node.name}${extra > 0 ? ` and ${extra} contained node(s)` : ''}. Ctrl+Z to undo.`, 'ok');
 }
 
 function deleteEdge(id) {
+  if (READ_ONLY) return;
   const edge = state.graph.edges.find((e) => e.id === id);
   if (!edge) return;
   removeEdge(state.graph, id);
@@ -281,21 +324,80 @@ function deleteEdge(id) {
   view.rebuild();
   select(null);
   refreshChrome();
-  toast('Highway deleted.', 'ok');
+  toast('Highway deleted. Ctrl+Z to undo.', 'ok');
 }
 
 /* ------------------------------------------------------------------ *
  * Chrome: legend, stats, title, selectors
  * ------------------------------------------------------------------ */
 
-function markDirty() {
-  state.dirty = true;
-  dom.statusDirty.textContent = '● unsaved changes';
+/**
+ * Record that the document changed: adds an undo step and updates the
+ * unsaved-changes flag. A no-op in read-only mode, so moving nodes there is
+ * never treated as an edit.
+ *
+ * @param {string|null} [key] coalescing key, see {@link patchKey}
+ */
+function markDirty(key = null) {
+  if (READ_ONLY) return;
+  undoHistory.record(snapshot(), key);
+  syncDirty();
 }
 
+/** The document was just stored. */
 function markClean() {
-  state.dirty = false;
-  dom.statusDirty.textContent = '';
+  undoHistory.markSaved(snapshot());
+  syncDirty();
+}
+
+/** Reflect history state in the status bar and the undo/redo buttons. */
+function syncDirty() {
+  state.dirty = !READ_ONLY && undoHistory.dirty;
+  dom.statusDirty.textContent = state.dirty ? '● unsaved changes' : '';
+  dom.btnUndo.disabled = !undoHistory.canUndo;
+  dom.btnRedo.disabled = !undoHistory.canRedo;
+}
+
+/** Swap in a snapshot from the history, keeping the selection if it still exists. */
+function restoreSnapshot(text) {
+  const graph = JSON.parse(text);
+  state.graph = graph;
+  view.setRoute(null);
+  view.setGraph(graph);
+  fillCategorySelectors();
+  const sel = state.selection;
+  const exists = sel && (sel.type === 'node'
+    ? Boolean(getNode(graph, sel.id))
+    : graph.edges.some((e) => e.id === sel.id));
+  select(exists ? sel : null);
+  if (dom.search.value.trim()) {
+    const count = view.setFilter(dom.search.value);
+    dom.searchCount.textContent = `${count} match${count === 1 ? '' : 'es'}`;
+  }
+  syncDirty();
+  refreshChrome();
+}
+
+function undo() {
+  if (READ_ONLY) return;
+  const text = undoHistory.undo();
+  if (text === null) {
+    hint('Nothing to undo');
+    return;
+  }
+  restoreSnapshot(text);
+  hint('Undone');
+}
+
+function redo() {
+  if (READ_ONLY) return;
+  const text = undoHistory.redo();
+  if (text === null) {
+    hint('Nothing to redo');
+    return;
+  }
+  restoreSnapshot(text);
+  hint('Redone');
 }
 
 function refreshChrome() {
@@ -303,9 +405,15 @@ function refreshChrome() {
   dom.statusStats.textContent =
     `${stats.nodes} nodes · ${stats.edges} links · ${stats.components} cluster(s)`
     + (stats.isolated ? ` · ${stats.isolated} isolated` : '');
-  dom.titleLine.textContent = state.file
-    ? `${state.graph.meta.title} — ${state.file}`
-    : `${state.graph.meta.title} (unsaved)`;
+  if (READ_ONLY) {
+    dom.titleLine.textContent = state.file
+      ? `${state.graph.meta.title} — ${state.file}`
+      : state.graph.meta.title;
+  } else {
+    dom.titleLine.textContent = state.file
+      ? `${state.graph.meta.title} — ${state.file}`
+      : `${state.graph.meta.title} (unsaved)`;
+  }
   document.title = `${state.graph.meta.title} · Mezsgye Atlas`;
   drawLegend(stats);
 }
@@ -359,8 +467,9 @@ function setGraph(graph, { file = null, dirty = false, fit = true } = {}) {
   view.setGraph(graph);
   fillCategorySelectors();
   select(null);
-  if (dirty) markDirty();
-  else markClean();
+  // A new document starts a fresh undo history.
+  undoHistory.reset(snapshot(), { saved: !dirty });
+  syncDirty();
   refreshChrome();
   if (fit) view.fit();
   dom.search.value = '';
@@ -395,6 +504,7 @@ async function refreshFileList(selected = state.file) {
 }
 
 async function saveAs() {
+  if (READ_ONLY) return;
   const suggestion = state.file ?? state.graph.meta.title;
   const name = await askText({
     title: 'Save atlas as',
@@ -407,6 +517,10 @@ async function saveAs() {
 }
 
 async function doSave(name) {
+  if (READ_ONLY) {
+    hint('Read-only view — saving is disabled');
+    return;
+  }
   try {
     const saved = await api.saveGraph(name, state.graph);
     state.file = saved.name;
@@ -460,6 +574,7 @@ function exportFile() {
 }
 
 async function importFile(file) {
+  if (READ_ONLY) return;
   try {
     const text = await file.text();
     const { graph, validation } = deserialize(text);
@@ -496,12 +611,15 @@ function wireGenerate() {
     setGraph(graph, { file: null, dirty: true });
     toast(`Generated ${graph.nodes.length} nodes and ${graph.edges.length} links (seed ${options.seed}).`, 'ok');
   });
-  $('#btn-generate').addEventListener('click', () => dom.dlgGenerate.showModal());
+  $('#btn-generate').addEventListener('click', () => {
+    if (!READ_ONLY) dom.dlgGenerate.showModal();
+  });
 }
 
 function wireMeta() {
   const form = $('#form-meta');
   $('#btn-meta').addEventListener('click', () => {
+    if (READ_ONLY) return;
     form.elements.title.value = state.graph.meta.title;
     form.elements.subtitle.value = state.graph.meta.subtitle ?? '';
     form.elements.notes.value = state.graph.meta.notes ?? '';
@@ -559,16 +677,22 @@ function wireToolbar() {
 }
 
 function setTool(tool) {
+  if (READ_ONLY && EDIT_TOOLS.has(tool)) {
+    hint('Read-only view — editing tools are disabled');
+    return;
+  }
   state.tool = tool;
   view.setTool(tool);
   for (const button of document.querySelectorAll('.tool')) {
     button.setAttribute('aria-pressed', String(button.dataset.tool === tool));
   }
   const hints = {
-    select: 'Select: drag nodes, drag background to pan, right-click to pin',
+    select: READ_ONLY
+      ? 'View only: click to read, drag nodes to look around (not saved), drag background to pan'
+      : 'Select: drag nodes, drag background to pan, right-click to pin',
     add: `Place: click empty space to add a ${dom.placeCategory.selectedOptions[0]?.textContent ?? 'node'}`,
     connect: 'Link: click two nodes to connect them',
-    route: 'Route: click origin then destination for the cheapest path',
+    route: 'Route: click origin then destination for the fastest path',
     erase: 'Erase: click a node or highway to delete it',
   };
   hint(hints[tool] ?? '');
@@ -583,11 +707,13 @@ function wireHeader() {
   $('#btn-save').addEventListener('click', () => (state.file ? doSave(state.file) : saveAs()));
   $('#btn-save-as').addEventListener('click', saveAs);
   $('#btn-new').addEventListener('click', async () => {
+    if (READ_ONLY) return;
     if (!(await confirmDiscard('Start a new atlas'))) return;
     setGraph(createEmptyGraph({ title: 'Untitled Atlas', schema: defaultSchema() }), { file: null });
     toast('New empty atlas.', 'ok');
   });
   $('#btn-delete-file').addEventListener('click', async () => {
+    if (READ_ONLY) return;
     const name = dom.fileSelect.value;
     if (!name) {
       toast('No stored atlas selected.', 'error');
@@ -606,7 +732,9 @@ function wireHeader() {
   });
 
   $('#btn-export').addEventListener('click', exportFile);
-  $('#btn-import').addEventListener('click', () => dom.importInput.click());
+  $('#btn-import').addEventListener('click', () => {
+    if (!READ_ONLY) dom.importInput.click();
+  });
   dom.importInput.addEventListener('change', async () => {
     const file = dom.importInput.files?.[0];
     dom.importInput.value = '';
@@ -615,7 +743,11 @@ function wireHeader() {
     await importFile(file);
   });
 
-  $('#btn-categories').addEventListener('click', () => categoryManager.open(state.graph));
+  $('#btn-categories').addEventListener('click', () => {
+    if (!READ_ONLY) categoryManager.open(state.graph);
+  });
+  dom.btnUndo.addEventListener('click', undo);
+  dom.btnRedo.addEventListener('click', redo);
 
   dom.search.addEventListener('input', () => {
     const query = dom.search.value;
@@ -651,6 +783,20 @@ function wireKeyboard() {
       return;
     }
     if (typing) return;
+
+    if (evt.ctrlKey || evt.metaKey) {
+      // Undo/redo, unless a dialog (e.g. Categories) is open on top.
+      const key = evt.key.toLowerCase();
+      const dialogOpen = Boolean(document.querySelector('dialog[open]'));
+      if (!READ_ONLY && !dialogOpen && (key === 'z' || key === 'y')) {
+        evt.preventDefault();
+        if (key === 'y' || evt.shiftKey) redo();
+        else undo();
+      }
+      // Never treat Ctrl/Cmd combos (copy, paste…) as tool shortcuts.
+      return;
+    }
+    if (evt.altKey) return;
 
     switch (evt.key.toLowerCase()) {
       case 'v': setTool('select'); break;
@@ -694,6 +840,12 @@ function wireKeyboard() {
  * ------------------------------------------------------------------ */
 
 async function boot() {
+  if (READ_ONLY) {
+    document.body.classList.add('read-only');
+    dom.readonlyBadge.hidden = false;
+    view.setReadOnly(true);
+    inspector.setReadOnly(true);
+  }
   wireHeader();
   wireToolbar();
   wireGenerate();
@@ -706,6 +858,8 @@ async function boot() {
   const graphs = await refreshFileList(null);
   if (graphs.length) {
     await openStored(graphs[0].name);
+  } else if (READ_ONLY) {
+    toast('There are no stored atlases to view yet.', 'error');
   } else {
     // First run: show something rather than an empty void.
     setGraph(generateAtlas({ seed: 7, sectors: 7, title: 'Example Atlas' }), { file: null, dirty: true });

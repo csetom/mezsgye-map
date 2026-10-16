@@ -20,6 +20,9 @@ import {
   deserialize,
   edgeCost,
   findRoute,
+  formatDuration,
+  nodeColor,
+  parseDuration,
   getEdge,
   getNode,
   graphStats,
@@ -63,7 +66,7 @@ test('default schema carries the setting categories', () => {
   const schema = defaultSchema();
   assert.deepEqual(
     schema.nodeCategories.map((c) => c.id),
-    ['sector', 'world', 'waystation', 'anomaly'],
+    ['sector', 'world', 'waystation', 'island', 'anomaly'],
   );
   assert.deepEqual(
     schema.edgeCategories.map((c) => c.id),
@@ -347,4 +350,145 @@ test('serialize/deserialize round-trips a document', () => {
 
 test('deserialize throws on non-JSON', () => {
   assert.throws(() => deserialize('{nope'), SyntaxError);
+});
+
+/* ------------------------------------------------- travel time (hours) */
+
+test('parseDuration reads hours, days, weeks and months (EN + HU)', () => {
+  assert.equal(parseDuration('36'), 36);
+  assert.equal(parseDuration(36), 36);
+  assert.equal(parseDuration('36h'), 36);
+  assert.equal(parseDuration('2d 6h'), 54);
+  assert.equal(parseDuration('2 days, 6 hours'), 54);
+  assert.equal(parseDuration('1 month 3 days'), 720 + 72);
+  assert.equal(parseDuration('1mo'), 720);
+  assert.equal(parseDuration('1 week'), 168);
+  assert.equal(parseDuration('1,5 nap'), 36);
+  assert.equal(parseDuration('2 hónap és 1 óra'), 1441);
+  assert.equal(parseDuration(''), null);
+  assert.equal(parseDuration('3 watches'), null);
+  assert.equal(parseDuration('soon'), null);
+  assert.equal(parseDuration(-4), null);
+});
+
+test('formatDuration rolls hours up into days and months', () => {
+  assert.equal(formatDuration(5), '5 hours');
+  assert.equal(formatDuration(1), '1 hour');
+  assert.equal(formatDuration(24), '1 day');
+  assert.equal(formatDuration(54), '2 days 6 hours');
+  assert.equal(formatDuration(720 + 25), '1 month 1 day 1 hour');
+  assert.equal(formatDuration(1500, { compact: true }), '2mo 2d 12h');
+  assert.equal(formatDuration(0), '0 hours');
+  assert.equal(formatDuration(null), '');
+  assert.equal(parseDuration(formatDuration(1234.5)), 1234.5);
+});
+
+test('default link categories carry one travel-time field in hours', () => {
+  const schema = defaultSchema();
+  for (const id of ['essence_street', 'minor_current']) {
+    const cat = schema.edgeCategories.find((c) => c.id === id);
+    const cost = cat.fields.find((f) => f.key === 'cost');
+    assert.equal(cost.type, 'duration');
+    assert.equal(cost.label, 'Travel time');
+    assert.equal(cat.fields.some((f) => f.key === 'travel_time'), false);
+  }
+});
+
+test('findRoute returns the shortest total travel time', () => {
+  const graph = createEmptyGraph();
+  const a = addNode(graph, { category: 'sector' });
+  const b = addNode(graph, { category: 'sector' });
+  const c = addNode(graph, { category: 'sector' });
+  addEdge(graph, { from: a.id, to: c.id, data: { cost: parseDuration('1 month') } });
+  addEdge(graph, { from: a.id, to: b.id, data: { cost: parseDuration('3d') } });
+  addEdge(graph, { from: b.id, to: c.id, data: { cost: parseDuration('4d 12h') } });
+  const route = findRoute(graph, a.id, c.id);
+  assert.deepEqual(route.nodes, [a.id, b.id, c.id]);
+  assert.equal(formatDuration(route.cost), '7 days 12 hours');
+});
+
+test('v1 documents migrate travel cost + travel time into hours', () => {
+  const v1 = {
+    schemaVersion: 1,
+    schema: {
+      nodeCategories: [{ id: 'sector', label: 'Sector' }],
+      edgeCategories: [{
+        id: 'essence_street',
+        label: 'Essence street',
+        fields: [
+          { key: 'cost', label: 'Travel cost', type: 'number', default: 1 },
+          { key: 'travel_time', label: 'Travel time', type: 'text' },
+          { key: 'toll', label: 'Toll', type: 'text' },
+        ],
+      }],
+    },
+    nodes: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+    edges: [
+      { id: 'e1', from: 'a', to: 'b', category: 'essence_street', data: { cost: 2, travel_time: '5 days' } },
+      { id: 'e2', from: 'b', to: 'c', category: 'essence_street', data: { cost: 3, travel_time: '3 watches' } },
+      { id: 'e3', from: 'a', to: 'c', category: 'essence_street', data: { cost: 4 } },
+    ],
+  };
+  const report = validateGraph(v1);
+  assert.ok(report.ok);
+  assert.ok(report.warnings.some((w) => /migrated/.test(w)));
+
+  const graph = normalizeGraph(v1);
+  assert.equal(graph.schemaVersion, SCHEMA_VERSION);
+  const fields = graph.schema.edgeCategories[0].fields;
+  assert.deepEqual(fields.map((f) => f.key), ['cost', 'toll']);
+  assert.equal(fields[0].type, 'duration');
+  assert.equal(fields[0].label, 'Travel time');
+
+  const [e1, e2, e3] = graph.edges;
+  assert.equal(e1.data.cost, 120, 'parseable travel time wins');
+  assert.equal(e2.data.cost, 3, 'unreadable travel time keeps old cost');
+  assert.match(e2.data.description, /3 watches/, 'unreadable text is preserved');
+  assert.equal(e3.data.cost, 4);
+  for (const e of graph.edges) assert.equal('travel_time' in e.data, false);
+
+  // Idempotent: a migrated document is left alone on the next load.
+  assert.deepEqual(normalizeGraph(graph).edges, graph.edges);
+});
+
+test('v2 documents keep a user-defined travel_time field untouched', () => {
+  const graph = createEmptyGraph();
+  addField(graph, 'edge', 'essence_street', { key: 'travel_time', label: 'Notes on time', type: 'text' });
+  const again = normalizeGraph(JSON.parse(serialize(graph)));
+  const cat = again.schema.edgeCategories.find((c) => c.id === 'essence_street');
+  assert.ok(cat.fields.some((f) => f.key === 'travel_time'));
+});
+
+/* ------------------------------------------------- per-node colour */
+
+test('nodes can override their category colour and reset it', () => {
+  const { graph, a } = fixture();
+  const sectorColor = graph.schema.nodeCategories.find((c) => c.id === 'sector').color;
+  assert.equal(a.color, null);
+  assert.equal(nodeColor(graph, a), sectorColor);
+
+  updateNode(graph, a.id, { color: '#FF8800' });
+  assert.equal(a.color, '#ff8800');
+  assert.equal(nodeColor(graph, a), '#ff8800');
+
+  // Category colour edits do not clobber the override…
+  updateCategory(graph, 'node', 'sector', { color: '#123456' });
+  assert.equal(nodeColor(graph, a), '#ff8800');
+
+  // …and reset goes back to the (current) category colour.
+  updateNode(graph, a.id, { color: null });
+  assert.equal(nodeColor(graph, a), '#123456');
+
+  assert.throws(() => updateNode(graph, a.id, { color: 'red; background:url(x)' }), /Not a colour/);
+});
+
+test('node colour survives a round-trip and junk is dropped', () => {
+  const { graph, a, b } = fixture();
+  updateNode(graph, a.id, { color: '#abc' });
+  const { graph: back } = deserialize(serialize(graph));
+  assert.equal(getNode(back, a.id).color, '#abc');
+  assert.equal(getNode(back, b.id).color, null);
+
+  const dirty = normalizeGraph({ ...JSON.parse(serialize(graph)), nodes: [{ id: 'q', color: 'javascript:1' }] });
+  assert.equal(dirty.nodes[0].color, null);
 });

@@ -111,3 +111,24 @@ test('namer avoids repeats within one run', () => {
   assert.match(namer.station(), /állomás$/);
   assert.match(namer.anomaly(), /anomália$/);
 });
+
+test('world names no longer end in -mezsgye', () => {
+  for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
+    const graph = generateAtlas({ seed, sectors: 12, worldsMin: 3, worldsMax: 4 });
+    for (const node of graph.nodes) {
+      assert.doesNotMatch(node.name, /mezsgye/i, `seed ${seed}: ${node.name}`);
+    }
+  }
+});
+
+test('generated streets carry travel time in hours, not a separate text field', () => {
+  const graph = generateAtlas({ seed: 4, sectors: 10 });
+  for (const edge of graph.edges) {
+    assert.equal('travel_time' in edge.data, false);
+    if (edge.category === 'collapsed_route') {
+      assert.equal('cost' in edge.data, false);
+    } else {
+      assert.ok(Number.isFinite(edge.data.cost) && edge.data.cost > 0, `${edge.id}: ${edge.data.cost}`);
+    }
+  }
+});

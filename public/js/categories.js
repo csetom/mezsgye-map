@@ -15,6 +15,8 @@ import {
   addField,
   addNodeCategory,
   countUsage,
+  formatDuration,
+  parseDuration,
   removeCategory,
   removeField,
   updateCategory,
@@ -109,7 +111,13 @@ export class CategoryManager {
                 style: 'solid',
                 width: 2.5,
                 fields: [
-                  { key: 'cost', label: 'Travel cost', type: 'number', default: 1 },
+                  {
+                    key: 'cost',
+                    label: 'Travel time',
+                    type: 'duration',
+                    default: 24,
+                    help: 'Used by the Route tool. e.g. 36h, 2d 6h, 1 month.',
+                  },
                   { key: 'description', label: 'Description', type: 'textarea' },
                 ],
               });
@@ -221,17 +229,19 @@ export class CategoryManager {
       } else {
         const defaultInput = el('input', {
           type: field.type === 'number' ? 'number' : 'text',
-          value: field.default ?? '',
-          placeholder: 'default',
+          value: field.type === 'duration' ? formatDuration(field.default) : (field.default ?? ''),
+          placeholder: field.type === 'duration' ? 'default, e.g. 2d 6h' : 'default',
         });
-        defaultInput.addEventListener('change', () => this.#apply(() => updateField(
-          this.graph, kind, cat.id, field.key,
-          {
-            default: field.type === 'number'
-              ? Number(defaultInput.value)
-              : (field.type === 'boolean' ? defaultInput.value === 'true' : defaultInput.value),
-          },
-        )));
+        defaultInput.addEventListener('change', () => this.#apply(() => {
+          let value;
+          if (field.type === 'number') value = Number(defaultInput.value);
+          else if (field.type === 'boolean') value = defaultInput.value === 'true';
+          else if (field.type === 'duration') {
+            value = parseDuration(defaultInput.value);
+            if (value === null) throw new Error('Default travel time not understood — try 36h, 2d 6h or 1 month.');
+          } else value = defaultInput.value;
+          updateField(this.graph, kind, cat.id, field.key, { default: value });
+        }));
         detail = defaultInput;
       }
 

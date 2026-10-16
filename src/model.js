@@ -9,10 +9,10 @@
  * Shape of a document:
  *
  *   {
- *     schemaVersion: 1,
+ *     schemaVersion: 2,
  *     meta:   { title, subtitle, notes, created, modified },
  *     schema: { nodeCategories: [...], edgeCategories: [...] },
- *     nodes:  [ { id, name, category, x, y, pinned, parent, data, notes } ],
+ *     nodes:  [ { id, name, category, x, y, pinned, parent, color, data, notes } ],
  *     edges:  [ { id, from, to, category, data, notes } ]
  *   }
  *
@@ -21,10 +21,27 @@
  * the renderer or the inspector is hard-coded to a specific category.
  */
 
-export const SCHEMA_VERSION = 1;
+/**
+ * Document format version.
+ *
+ * 2 — edge "travel cost" and free-text "travel time" merged into one
+ *     `cost` field of type `duration`, stored as hours.
+ */
+export const SCHEMA_VERSION = 2;
 
-/** Field types the inspector knows how to render. */
-export const FIELD_TYPES = ['text', 'textarea', 'number', 'boolean', 'select', 'tags'];
+/**
+ * Field types the inspector knows how to render. `duration` is stored as a
+ * number of hours and shown as months / days / hours.
+ */
+export const FIELD_TYPES = ['text', 'textarea', 'number', 'duration', 'boolean', 'select', 'tags'];
+
+/** Calendar used to turn travel hours into days and months. */
+export const HOURS_PER_DAY = 24;
+export const DAYS_PER_MONTH = 30;
+export const HOURS_PER_MONTH = HOURS_PER_DAY * DAYS_PER_MONTH;
+
+/** A colour value usable as a node override: `#rgb` or `#rrggbb`. */
+const HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
 
 /** Glyphs a node category can be drawn with. */
 export const NODE_SHAPES = ['hex', 'circle', 'square', 'triangle', 'diamond', 'star'];
@@ -267,8 +284,13 @@ export function defaultSchema() {
         width: 3.5,
         description: 'A major essence wave used as a highway between sectors.',
         fields: [
-          { key: 'cost', label: 'Travel cost', type: 'number', default: 1 },
-          { key: 'travel_time', label: 'Travel time', type: 'text' },
+          {
+            key: 'cost',
+            label: 'Travel time',
+            type: 'duration',
+            default: 24,
+            help: 'Used by the Route tool. e.g. 36h, 2d 6h, 1 month.',
+          },
           {
             key: 'current_strength',
             label: 'Current strength',
@@ -290,8 +312,13 @@ export function defaultSchema() {
         width: 2,
         description: 'A thin, unreliable wave. Slower, cheaper, less watched.',
         fields: [
-          { key: 'cost', label: 'Travel cost', type: 'number', default: 2 },
-          { key: 'travel_time', label: 'Travel time', type: 'text' },
+          {
+            key: 'cost',
+            label: 'Travel time',
+            type: 'duration',
+            default: 72,
+            help: 'Used by the Route tool. e.g. 36h, 2d 6h, 1 month.',
+          },
           {
             key: 'stability',
             label: 'Stability',
@@ -310,7 +337,6 @@ export function defaultSchema() {
         width: 2,
         description: 'A street that no longer carries. Known, mapped, unusable.',
         fields: [
-          { key: 'cost', label: 'Travel cost', type: 'number', default: 99 },
           { key: 'collapsed_when', label: 'Collapsed when', type: 'text' },
           { key: 'cause', label: 'Cause', type: 'textarea' },
         ],
@@ -427,6 +453,7 @@ export function normalizeGraph(input) {
       y: Number.isFinite(raw?.y) ? raw.y : 0,
       pinned: Boolean(raw?.pinned),
       parent: typeof raw?.parent === 'string' && raw.parent ? raw.parent : null,
+      color: normalizeColor(raw?.color),
       data: raw?.data && typeof raw.data === 'object' ? { ...raw.data } : {},
       notes: String(raw?.notes ?? ''),
     };
@@ -459,6 +486,9 @@ export function normalizeGraph(input) {
     });
   }
 
+  const sourceVersion = Number.isFinite(src.schemaVersion) ? src.schemaVersion : 1;
+  if (sourceVersion < 2) migrateTravelTime(edgeCategories, edges);
+
   const metaSrc = src.meta && typeof src.meta === 'object' ? src.meta : {};
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -473,6 +503,59 @@ export function normalizeGraph(input) {
     nodes,
     edges,
   };
+}
+
+/** A valid `#rgb`/`#rrggbb` override, or null meaning "use the category colour". */
+function normalizeColor(value) {
+  return typeof value === 'string' && HEX_COLOR.test(value.trim()) ? value.trim().toLowerCase() : null;
+}
+
+/**
+ * v1 → v2: merge the numeric "travel cost" and free-text "travel time" edge
+ * fields into one `cost` field of type `duration` (hours).
+ *
+ * A parseable `travel_time` ("5 days") wins and becomes the hour count; when
+ * it is missing or unreadable the old `cost` number is kept and read as hours.
+ * Unreadable text is preserved in the edge's description rather than lost.
+ * Mutates the (already normalized, freshly built) arrays in place.
+ */
+function migrateTravelTime(edgeCategories, edges) {
+  const touched = new Set();
+  for (const cat of edgeCategories) {
+    const costField = cat.fields.find((f) => f.key === 'cost');
+    const timeIndex = cat.fields.findIndex((f) => f.key === 'travel_time');
+    if (!costField && timeIndex === -1) continue;
+    touched.add(cat.id);
+    if (costField) {
+      costField.type = 'duration';
+      if (/^travel cost$|^cost$/i.test(costField.label)) costField.label = 'Travel time';
+      const def = parseDuration(costField.default);
+      if (def === null) delete costField.default;
+      else costField.default = def;
+    } else {
+      cat.fields.splice(timeIndex, 0, { key: 'cost', label: 'Travel time', type: 'duration' });
+    }
+    const stale = cat.fields.findIndex((f) => f.key === 'travel_time');
+    if (stale !== -1) cat.fields.splice(stale, 1);
+  }
+
+  for (const edge of edges) {
+    if (!touched.has(edge.category) && edge.data.travel_time === undefined) continue;
+    const text = edge.data.travel_time;
+    const fromText = parseDuration(text);
+    if (fromText !== null) {
+      edge.data.cost = fromText;
+    } else {
+      const old = Number(edge.data.cost);
+      if (Number.isFinite(old) && old >= 0) edge.data.cost = old;
+      else delete edge.data.cost;
+      if (typeof text === 'string' && text.trim()) {
+        const note = `Travel time (old): ${text.trim()}`;
+        edge.data.description = edge.data.description ? `${edge.data.description}\n${note}` : note;
+      }
+    }
+    delete edge.data.travel_time;
+  }
 }
 
 /** Walk parent chains and cut any that loop. */
@@ -595,6 +678,11 @@ export function getEdgeCategory(graph, id) {
   return graph.schema.edgeCategories.find((c) => c.id === id) ?? null;
 }
 
+/** The colour a node is drawn with: its own override, else its category's. */
+export function nodeColor(graph, node) {
+  return node?.color || getNodeCategory(graph, node?.category)?.color || '#8b6cff';
+}
+
 /** Direct children of a node (e.g. the worlds of a sector). */
 export function childrenOf(graph, nodeId) {
   return graph.nodes.filter((n) => n.parent === nodeId);
@@ -656,6 +744,7 @@ export function addNode(graph, spec = {}) {
     y: Number.isFinite(spec.y) ? spec.y : 0,
     pinned: Boolean(spec.pinned),
     parent: spec.parent && getNode(graph, spec.parent) ? spec.parent : null,
+    color: normalizeColor(spec.color),
     data: { ...defaultsFor(category), ...(spec.data ?? {}) },
     notes: spec.notes ?? '',
   };
@@ -690,6 +779,15 @@ export function updateNode(graph, id, patch = {}) {
   if (patch.x !== undefined && Number.isFinite(patch.x)) node.x = patch.x;
   if (patch.y !== undefined && Number.isFinite(patch.y)) node.y = patch.y;
   if (patch.pinned !== undefined) node.pinned = Boolean(patch.pinned);
+  if (patch.color !== undefined) {
+    // null / '' resets to the category colour.
+    if (patch.color === null || patch.color === '') node.color = null;
+    else {
+      const color = normalizeColor(patch.color);
+      if (!color) throw new Error(`Not a colour: ${patch.color}`);
+      node.color = color;
+    }
+  }
   if (patch.parent !== undefined) {
     if (patch.parent === null || patch.parent === '') {
       node.parent = null;
@@ -1003,10 +1101,83 @@ export function removeField(graph, kind, categoryId, fieldKey, { purgeValues = t
  * Analysis
  * ------------------------------------------------------------------ */
 
-/** Numeric travel cost of an edge, defaulting to 1. */
+/** Travel time of an edge in hours (the Route tool's weight), defaulting to 1. */
 export function edgeCost(edge) {
   const raw = Number(edge?.data?.cost);
   return Number.isFinite(raw) && raw > 0 ? raw : 1;
+}
+
+/** Unit words accepted by {@link parseDuration}, mapped to hours. English and Hungarian. */
+const DURATION_UNITS = [
+  [/^(h|hr|hrs|hour|hours|ó|óra|órá|órát)$/, 1],
+  [/^(d|day|days|nap|napot)$/, HOURS_PER_DAY],
+  [/^(w|wk|week|weeks|hét|hetet)$/, HOURS_PER_DAY * 7],
+  [/^(mo|mon|month|months|hó|hónap|hónapot)$/, HOURS_PER_MONTH],
+];
+
+/**
+ * Parse a human travel time into hours.
+ *
+ * Accepts a bare number (hours), or any mix of amounts and units:
+ * "36", "36h", "2d 6h", "1 month 3 days", "1,5 nap", "2 hét".
+ * A month is {@link DAYS_PER_MONTH} days, a day {@link HOURS_PER_DAY} hours.
+ *
+ * @param {string|number|null|undefined} input
+ * @returns {number|null} hours, or null if the text is empty or not understood
+ */
+export function parseDuration(input) {
+  if (typeof input === 'number') return Number.isFinite(input) && input >= 0 ? input : null;
+  const text = String(input ?? '').trim().toLowerCase();
+  if (!text) return null;
+  if (/^\d+(?:[.,]\d+)?$/.test(text)) return Number(text.replace(',', '.'));
+
+  const token = /(\d+(?:[.,]\d+)?)\s*([a-zá-ű]+)\.?/gy;
+  const separator = /[\s,;+]*(?:and\s+|és\s+)?/y;
+  let total = 0;
+  let pos = 0;
+  let matched = false;
+  while (pos < text.length) {
+    separator.lastIndex = pos;
+    separator.exec(text);
+    pos = separator.lastIndex;
+    if (pos >= text.length) break;
+    token.lastIndex = pos;
+    const m = token.exec(text);
+    if (!m) return null;
+    const unit = DURATION_UNITS.find(([re]) => re.test(m[2]));
+    if (!unit) return null;
+    total += Number(m[1].replace(',', '.')) * unit[1];
+    pos = token.lastIndex;
+    matched = true;
+  }
+  return matched ? Math.round(total * 100) / 100 : null;
+}
+
+/**
+ * Format hours as months / days / hours.
+ *
+ * @param {number|null|undefined} hours
+ * @param {{compact?: boolean}} [opts] compact gives "1mo 2d 6h"
+ * @returns {string} e.g. "1 month 2 days 6 hours"; '' for missing values
+ */
+export function formatDuration(hours, { compact = false } = {}) {
+  const value = Number(hours);
+  if (hours === null || hours === undefined || hours === '' || !Number.isFinite(value) || value < 0) return '';
+  let rest = Math.round(value * 10) / 10;
+  const months = Math.floor(rest / HOURS_PER_MONTH);
+  rest -= months * HOURS_PER_MONTH;
+  const days = Math.floor(rest / HOURS_PER_DAY);
+  rest = Math.round((rest - days * HOURS_PER_DAY) * 10) / 10;
+
+  const parts = [];
+  const add = (n, short, one, many) => {
+    if (n) parts.push(compact ? `${n}${short}` : `${n} ${n === 1 ? one : many}`);
+  };
+  add(months, 'mo', 'month', 'months');
+  add(days, 'd', 'day', 'days');
+  add(rest, 'h', 'hour', 'hours');
+  if (!parts.length) return compact ? '0h' : '0 hours';
+  return parts.join(' ');
 }
 
 /**

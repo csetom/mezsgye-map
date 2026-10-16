@@ -18,6 +18,7 @@
       <h1>Mezsgye Atlas</h1>
       <p id="atlas-title-line">Untitled Atlas</p>
     </div>
+    <span id="readonly-badge" class="readonly-badge" hidden title="This view cannot change the atlas. Moved nodes are not saved.">Read-only</span>
   </div>
 
   <div class="toolgroup" role="group" aria-label="Atlas file">
@@ -25,19 +26,24 @@
     <select id="file-select" title="Stored atlases">
       <option value="">— unsaved —</option>
     </select>
-    <button id="btn-save" title="Save to the selected file (Ctrl+S)">Save</button>
-    <button id="btn-save-as" title="Save under a new name">Save as…</button>
-    <button id="btn-new" title="Start an empty atlas">New</button>
-    <button id="btn-delete-file" class="danger" title="Delete the selected stored atlas">Delete file</button>
+    <button id="btn-save" data-edit title="Save to the selected file (Ctrl+S)">Save</button>
+    <button id="btn-save-as" data-edit title="Save under a new name">Save as…</button>
+    <button id="btn-new" data-edit title="Start an empty atlas">New</button>
+    <button id="btn-delete-file" data-edit class="danger" title="Delete the selected stored atlas">Delete file</button>
   </div>
 
   <div class="toolgroup" role="group" aria-label="Transfer">
-    <button id="btn-import" title="Import an atlas JSON file">Import…</button>
+    <button id="btn-import" data-edit title="Import an atlas JSON file">Import…</button>
     <button id="btn-export" title="Download this atlas as JSON">Export</button>
     <input type="file" id="import-input" accept=".json,application/json" hidden>
   </div>
 
-  <div class="toolgroup" role="group" aria-label="Authoring">
+  <div class="toolgroup" role="group" aria-label="History" data-edit>
+    <button id="btn-undo" title="Undo (Ctrl+Z)" disabled>↶ Undo</button>
+    <button id="btn-redo" title="Redo (Ctrl+Y / Ctrl+Shift+Z)" disabled>↷ Redo</button>
+  </div>
+
+  <div class="toolgroup" role="group" aria-label="Authoring" data-edit>
     <button id="btn-generate" title="Generate a sector map">Generate…</button>
     <button id="btn-categories" title="Add or edit categories and their fields">Categories…</button>
     <button id="btn-meta" title="Atlas title and notes">Atlas info…</button>
@@ -55,25 +61,25 @@
     <button class="tool" data-tool="select" aria-pressed="true" title="Select / drag  (V)">
       <span class="glyph">➚</span><span class="tool-label">Select</span>
     </button>
-    <button class="tool" data-tool="add" title="Place a new node  (A)">
+    <button class="tool" data-tool="add" data-edit title="Place a new node  (A)">
       <span class="glyph">＋</span><span class="tool-label">Place</span>
     </button>
-    <button class="tool" data-tool="connect" title="Draw a highway between two nodes  (C)">
+    <button class="tool" data-tool="connect" data-edit title="Draw a highway between two nodes  (C)">
       <span class="glyph">↔</span><span class="tool-label">Link</span>
     </button>
-    <button class="tool" data-tool="route" title="Plot the cheapest route between two nodes  (R)">
+    <button class="tool" data-tool="route" title="Plot the fastest route between two nodes  (R)">
       <span class="glyph">⇢</span><span class="tool-label">Route</span>
     </button>
-    <button class="tool" data-tool="erase" title="Delete what you click  (X)">
+    <button class="tool" data-tool="erase" data-edit title="Delete what you click  (X)">
       <span class="glyph">⌫</span><span class="tool-label">Erase</span>
     </button>
 
-    <div class="toolbar-sep"></div>
+    <div class="toolbar-sep" data-edit></div>
 
     <label class="visually-hidden" for="place-category">Category to place</label>
-    <select id="place-category" title="Category used by the Place tool"></select>
+    <select id="place-category" data-edit title="Category used by the Place tool"></select>
     <label class="visually-hidden" for="link-category">Category for new links</label>
-    <select id="link-category" title="Category used by the Link tool"></select>
+    <select id="link-category" data-edit title="Category used by the Link tool"></select>
 
     <div class="toolbar-sep"></div>
 

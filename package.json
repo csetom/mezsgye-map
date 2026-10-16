@@ -17,5 +17,8 @@
   "private": true,
   "devDependencies": {
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "typescript-language-server": "^6.0.2"
   }
 }

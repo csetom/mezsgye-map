@@ -11,6 +11,7 @@ import {
   addEdge, addNode,
   createEmptyGraph,
   defaultSchema,
+  HOURS_PER_DAY,
   makeRng,
   pick,
   randInt,
@@ -137,8 +138,11 @@ export function generateAtlas(options = {}) {
       to: b.id,
       category,
       data: {
-        cost: category === 'minor_current' ? randInt(rng, 2, 4) : randInt(rng, 1, 3),
-        travel_time: `${randInt(rng, 1, 23)} ${pick(rng, ['hours', 'days'])}`,
+        // Travel time in hours: main streets are hours to ~10 days, minor
+        // currents a day to ~2 months, so routing has real trade-offs.
+        cost: category === 'minor_current'
+          ? randInt(rng, 1, 60) * HOURS_PER_DAY
+          : randInt(rng, 4, 240),
         current_strength: pick(rng, CURRENTS),
         void_maker_required: category !== 'minor_current' || rng() < 0.5,
         hazards: rng() < 0.35 ? [pick(rng, SECTOR_HAZARDS)] : [],
@@ -146,6 +150,8 @@ export function generateAtlas(options = {}) {
       },
     });
     streetNames.set(edge.id, name);
+    // A collapsed route carries no traffic, so it has no travel time.
+    if (category === 'collapsed_route') delete edge.data.cost;
     return edge;
   }
 

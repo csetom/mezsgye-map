@@ -322,6 +322,18 @@ label.field.inline > span { margin: 0; }
 label.field.inline input[type="checkbox"] { width: auto; }
 .field-help { font-size: 10px; color: var(--text-faint); margin-top: 2px; }
 
+/* Per-node colour override */
+div.field.color-field { margin-bottom: 8px; }
+div.field.color-field > span { display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 3px; }
+div.field.color-field > .field-help { color: var(--text-faint); font-size: 10px; }
+.color-row { display: flex; align-items: center; gap: 8px; }
+.color-row input[type="color"] { width: 44px; height: 26px; padding: 1px; cursor: pointer; }
+.color-row button:disabled { opacity: 0.45; cursor: default; }
+
+/* Unparseable travel time and other invalid inputs */
+input[aria-invalid="true"] { border-color: var(--bad); outline-color: var(--bad); }
+label.field input[aria-invalid="true"] ~ .field-help { color: var(--bad); }
+
 .tag-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
 .tag {
   display: inline-flex; align-items: center; gap: 4px;
@@ -413,3 +425,25 @@ table.fields input, table.fields select { padding: 2px 5px; width: 100%; }
   .workspace { grid-template-columns: 76px minmax(0, 1fr) 290px; }
   .dialog-body { min-width: 0; }
 }
+
+/* ---------------------------------------------------------- read-only view */
+body.read-only [data-edit] { display: none !important; }
+.readonly-badge {
+  margin-left: 10px;
+  padding: 2px 8px;
+  border: 1px solid var(--warn);
+  border-radius: 10px;
+  color: var(--warn);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  white-space: nowrap;
+}
+.readonly-badge[hidden] { display: none; }
+.ro-field { margin-bottom: 8px; }
+.ro-field > .ro-label { display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 2px; }
+.ro-field > .ro-value { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ro-meta h2 { margin: 0 0 4px; font-size: 15px; }
+.ro-meta .ro-sub { color: var(--text-dim); margin: 0 0 8px; }
+.ro-meta .ro-notes { white-space: pre-wrap; margin: 0 0 12px; }
+button:disabled { opacity: 0.45; cursor: default; }

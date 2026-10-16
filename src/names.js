@@ -78,7 +78,7 @@ export function createNamer(rng) {
         : compound()));
     },
 
-    /** e.g. "Ködrév II", "Zsálya-mezsgye" */
+    /** e.g. "Ködrév II", "Vén Hamu", "Zsályahalom" */
     world(parentName, index) {
       return unique(() => {
         const roll = rng();
@@ -86,7 +86,7 @@ export function createNamer(rng) {
           const numeral = NUMERALS[Math.min(index ?? 0, NUMERALS.length - 1)];
           return `${parentName} ${numeral}`;
         }
-        if (roll < 0.7) return `${pickFrom(rng, ROOTS)}-mezsgye`;
+        if (roll < 0.7) return `${pickFrom(rng, EPITHETS)} ${pickFrom(rng, ROOTS)}`;
         return compound();
       });
     },
